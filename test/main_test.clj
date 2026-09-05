@@ -178,15 +178,6 @@
                     :props {:method "POST"
                             :headers {"content-type" "application/json"}
                             :body (JSON.stringify {:chat_id "user-1" :text "https://t.me/serbia/11"})}}
-                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
-                   {:type "d1.bind" :params [11 1]}
-                   {:type "fetch"
-                    :url "https://api.telegram.org/bottest-token/sendMessage"
-                    :props {:method "POST"
-                            :headers {"content-type" "application/json"}
-                            :body (JSON.stringify {:chat_id "user-1" :text "https://t.me/serbia/13"})}}
-                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
-                   {:type "d1.bind" :params [13 1]}
                    {:type "fetch" :url "https://t.me/s/broken?after=20" :props {}}
                    {:type "fetch" :url "https://t.me/s/cursorfail?after=30" :props {}}
                    {:type "fetch"
@@ -200,6 +191,53 @@
                (assert/equal
                 (count (.filter logs (fn [{:level level}] (= "error" level))))
                 3))))))
+
+(t/test "scheduled handler retries a failed notification on a later run"
+        (fn []
+          (.clearLogs server)
+          (.then
+           (.scheduled (.getWorker server) {:cron "* * * * *"})
+           (fn []
+             (.clearLogs server)
+             (.then
+              (.scheduled (.getWorker server) {:cron "* * * * *"})
+              (fn []
+                (let [logs (.getLogs server)
+                      {:message message} (.find logs
+                                                (fn [{:level level :message message}]
+                                                  (and (= "log" level)
+                                                       (.includes message "scheduled_effects"))))
+                      {:effects effects} (JSON.parse message)]
+                  (assert/equal
+                   (count (.filter effects
+                                   (fn [effect]
+                                     (and (= "fetch" (get effect "type"))
+                                          (= "https://t.me/s/serbia?after=10"
+                                             (get effect "url"))))))
+                   1)
+                  (assert/equal
+                   (count (.filter effects
+                                   (fn [effect]
+                                     (and (= "fetch" (get effect "type"))
+                                          (= "https://api.telegram.org/bottest-token/sendMessage"
+                                             (get effect "url"))
+                                          (= "https://t.me/serbia/11"
+                                             (get (JSON.parse (get (get effect "props") "body")) "text"))))))
+                   1)
+                  (assert/equal
+                   (count (.filter effects
+                                   (fn [effect]
+                                     (and (= "fetch" (get effect "type"))
+                                          (= "https://t.me/serbia/13"
+                                             (get effect "url"))))))
+                   0)
+                  (assert/equal
+                   (count (.filter effects
+                                   (fn [effect]
+                                     (and (= "d1.bind" (get effect "type"))
+                                          (= "[11,1]"
+                                             (JSON.stringify (get effect "params")))))))
+                   0))))))))
 
 (t/test "worker lists tasks for the Telegram user"
         (fn []

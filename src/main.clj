@@ -26,7 +26,8 @@
      user-id
      (str text (if (.endsWith text "/") "" "/") post-id))
     (fn [error]
-      (log-task-error task-id "send" error)))
+      (log-task-error task-id "send" error)
+      (.reject Promise {:logged true :error error})))
    (fn [] (update-cursor task-id post-id))))
 
 (defn- process-task [env task]
@@ -58,7 +59,10 @@
          (fn []
            (.catch
             (process-task env task)
-            (fn [error] (log-task-error (get task "id") "process" error))))))
+            (fn [error]
+              (if (get error "logged")
+                nil
+                (log-task-error (get task "id") "process" error)))))))
       (.resolve Promise nil)
       results))))
 
