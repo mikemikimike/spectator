@@ -155,6 +155,65 @@
                   "text")
                  "Канал уже добавлен.")))))))
 
+(t/test "worker ignores a repeated mutating update"
+        (fn []
+          (.then
+           (.fetch server "/"
+                   {:method "POST"
+                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                    :body (JSON.stringify {:update_id 100
+                                           :message {:text "/delete 2"
+                                                     :chat {:id "chat-1"}
+                                                     :from {:id "user-1"}}})})
+           (fn [response]
+             (.then
+              (.json response)
+              (fn [body]
+                (let [effects (get body "effects")]
+                  (assert/equal
+                   (count (.filter effects
+                                   (fn [effect]
+                                     (= "DELETE FROM tasks WHERE id = (SELECT id FROM tasks WHERE telegram_user_id = ?1 ORDER BY id LIMIT 1 OFFSET ?2) AND telegram_user_id = ?1 RETURNING id"
+                                        (get effect "sql")))))
+                   1)
+                  (.then
+                   (.fetch server "/"
+                           {:method "POST"
+                            :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                            :body (JSON.stringify {:update_id 100
+                                                   :message {:text "/delete 2"
+                                                             :chat {:id "chat-1"}
+                                                             :from {:id "user-1"}}})})
+                   (fn [response]
+                     (.then
+                      (.json response)
+                      (fn [body]
+                        (let [effects (get body "effects")]
+                          (assert/equal
+                           (count (.filter effects
+                                           (fn [effect]
+                                             (= "DELETE FROM tasks WHERE id = (SELECT id FROM tasks WHERE telegram_user_id = ?1 ORDER BY id LIMIT 1 OFFSET ?2) AND telegram_user_id = ?1 RETURNING id"
+                                                (get effect "sql")))))
+                           0)
+                          (.then
+                           (.fetch server "/"
+                                   {:method "POST"
+                                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                                    :body (JSON.stringify {:update_id 101
+                                                           :message {:text "/delete 2"
+                                                                     :chat {:id "chat-1"}
+                                                                     :from {:id "user-1"}}})})
+                           (fn [response]
+                             (.then
+                              (.json response)
+                              (fn [body]
+                                (assert/equal
+                                 (count (.filter (get body "effects")
+                                                 (fn [effect]
+                                                   (= "DELETE FROM tasks WHERE id = (SELECT id FROM tasks WHERE telegram_user_id = ?1 ORDER BY id LIMIT 1 OFFSET ?2) AND telegram_user_id = ?1 RETURNING id"
+                                                      (get effect "sql")))))
+                                 1)))))))))))))))))
+
 (t/test "scheduled handler advances ordered posts and isolates failures"
         (fn []
           (.clearLogs server)

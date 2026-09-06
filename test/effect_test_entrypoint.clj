@@ -3,6 +3,8 @@
   (:require [main :as main])
   (:require [telegram :as telegram]))
 
+(def- processed-update-ids (Set.))
+
 (defn- database [effects]
   {:prepare (fn [sql]
               (.push effects {:type "d1.prepare" :sql sql})
@@ -26,7 +28,13 @@
                                (.resolve
                                 Promise
                                 {:results (if (.startsWith sql "INSERT")
-                                            (if (= "duplicate-user" first) [] [{:id 3}])
+                                            (if (.startsWith sql "INSERT OR IGNORE INTO processed_updates")
+                                              (if (.has processed-update-ids first)
+                                                []
+                                                (do
+                                                  (.add processed-update-ids first)
+                                                  [{:update_id first}]))
+                                              (if (= "duplicate-user" first) [] [{:id 3}]))
                                             (if (= "empty-user" first)
                                               []
                                               (if (.startsWith sql "DELETE")

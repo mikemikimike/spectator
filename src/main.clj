@@ -62,19 +62,33 @@
       (.resolve Promise nil)
       results))))
 
+(defn- handle-message [env update]
+  (let [message (get update "message")]
+    (or (start/handle env message)
+        (delete_cmd/handle env message)
+        (add/handle env message)
+        (tasks/handle env message)
+        (Response. "OK"))))
+
+(defn- handle-update [env update]
+  (if (get update "update_id")
+    (.then
+     (db/all
+      "INSERT OR IGNORE INTO processed_updates (update_id) VALUES (?1) RETURNING update_id"
+      [(get update "update_id")])
+     (fn [{:results results}]
+       (if (> (count results) 0)
+         (handle-message env update)
+         (Response. "OK"))))
+    (handle-message env update)))
+
 (defn handle-fetch [request env]
   (if (= "POST" (get request "method"))
     (if-let [secret (:TELEGRAM_WEBHOOK_SECRET env)
              authorized (= secret (.get (get request "headers") "X-Telegram-Bot-Api-Secret-Token"))]
       (.then
        (.json request)
-       (fn [update]
-         (let [message (get update "message")]
-           (or (start/handle env message)
-               (delete_cmd/handle env message)
-               (add/handle env message)
-               (tasks/handle env message)
-               (Response. "OK")))))
+       (fn [update] (handle-update env update)))
       (Response. "Unauthorized" {:status 401}))
     (Response. "OK")))
 
