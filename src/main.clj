@@ -1,6 +1,7 @@
 (ns main
   (:require [commands.add :as add])
   (:require [commands.delete :as delete_cmd])
+  (:require [commands.filter :as filter_cmd])
   (:require [commands.start :as start])
   (:require [commands.tasks :as tasks])
   (:require [db :as db])
@@ -18,37 +19,60 @@
    "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"
    [post-id task-id]))
 
+(defn- contains-keyword [text keyword]
+  (.test
+   (RegExp.
+    (str "(^|[^\p{L}\p{N}])" (RegExp.escape keyword) "($|[^\p{L}\p{N}])")
+    "iu")
+   text))
+
+(defn- matches-selection-rule [selection-rule text]
+  (if (or (not selection-rule) (not text) (= "" text))
+    true
+    (let [keywords (.split selection-rule " ")
+          required (-> keywords
+                       (.filter (fn [keyword] (.startsWith keyword "+")))
+                       (.map (fn [keyword] (.slice keyword 1))))
+          prohibited (-> keywords
+                         (.filter (fn [keyword] (.startsWith keyword "-")))
+                         (.map (fn [keyword] (.slice keyword 1))))]
+      (and (or (= 0 (count required))
+               (.some required (fn [keyword] (contains-keyword text keyword))))
+           (not (.some prohibited (fn [keyword] (contains-keyword text keyword))))))))
+
 (defn- notify-post [env {:id task-id :telegram_user_id user-id :text text} post-id]
-  (.then
-   (.catch
-    (telegram/send-message
-     env
-     user-id
-     (str text (if (.endsWith text "/") "" "/") post-id))
-    (fn [error]
-      (log-task-error task-id "send" error)))
-   (fn [] (update-cursor task-id post-id))))
+  (-> (telegram/send-message
+       env
+       user-id
+       (str text (if (.endsWith text "/") "" "/") post-id))
+      (.catch (fn [error] (log-task-error task-id "send" error)))
+      (.then (fn [] (update-cursor task-id post-id)))))
 
 (defn- process-task [env task]
-  (let [{:id task-id :text text :cursor cursor} task
+  (let [{:id task-id :text text :cursor cursor :selection_rule selection-rule} task
         task-channel (telegram/channel text)]
     (.then
-     (telegram/fetch-post-ids (str (telegram/preview-url task-channel) "?after=" cursor) false)
-     (fn [ids]
-       (let [new-ids (.sort
-                      (.filter ids (fn [id] (> id cursor)))
-                      (fn [left right] (- left right)))]
-         (reduce
-          (fn [promise post-id]
-            (.then promise (fn [] (notify-post env task post-id))))
-          (.resolve Promise nil)
-          new-ids))))))
+     (telegram/fetch-posts (str (telegram/preview-url task-channel) "?after=" cursor) false)
+     (fn [posts]
+       (->> (-> posts
+                (.filter (fn [post] (> (get post "id") cursor)))
+                (.sort (fn [left right] (- (get left "id") (get right "id")))))
+            (reduce
+             (fn [promise post]
+               (.then
+                promise
+                (fn []
+                  (let [post-id (get post "id")]
+                    (if (matches-selection-rule selection-rule (get post "text"))
+                      (notify-post env task post-id)
+                      (update-cursor task-id post-id))))))
+             (.resolve Promise nil)))))))
 
 ;; ponytail: tasks run sequentially; batch them only when Worker limits are measured.
 (defn handle-scheduled [env]
   (.then
    (db/all
-    "SELECT id, telegram_user_id, text, cursor FROM tasks ORDER BY id"
+    "SELECT id, telegram_user_id, text, cursor, selection_rule FROM tasks ORDER BY id"
     [])
    (fn [{:results results}]
      (reduce
@@ -72,6 +96,7 @@
          (let [message (get update "message")]
            (or (start/handle env message)
                (delete_cmd/handle env message)
+               (filter_cmd/handle env message)
                (add/handle env message)
                (tasks/handle env message)
                (Response. "OK")))))
@@ -79,17 +104,17 @@
     (Response. "OK")))
 
 (export-default
- {:fetch (fn [request env ctx]
-           (telegram/with-fetch
-             (fn [url options] (globalThis.fetch url options))
-             (fn []
-               (db/with-db
-                 (get env "TASKS")
-                 (fn [] (handle-fetch request env))))))
-  :scheduled (fn [controller env ctx]
-               (telegram/with-fetch
-                 (fn [url options] (globalThis.fetch url options))
-                 (fn []
-                   (db/with-db
-                     (get env "TASKS")
-                     (fn [] (handle-scheduled env))))))})
+ :fetch (fn [request env ctx]
+          (telegram/with-fetch
+            (fn [url options] (globalThis.fetch url options))
+            (fn []
+              (db/with-db
+                (get env "TASKS")
+                (fn [] (handle-fetch request env))))))
+ :scheduled (fn [controller env ctx]
+              (telegram/with-fetch
+                (fn [url options] (globalThis.fetch url options))
+                (fn []
+                  (db/with-db
+                    (get env "TASKS")
+                    (fn [] (handle-scheduled env)))))))

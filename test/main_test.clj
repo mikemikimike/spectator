@@ -10,7 +10,6 @@
                         :main "bin/test/effect_test_entrypoint.js"
                         :compatibility_date "2026-08-24"}
                :vars {"TELEGRAM_BOT_TOKEN" "test-token"
-                      "TELEGRAM_CHAT_ID" "test-chat"
                       "TELEGRAM_WEBHOOK_SECRET" "test-secret"}}]}))
 
 (t/before (fn [] (.listen server)))
@@ -39,6 +38,7 @@
                              :body (JSON.stringify {:chat_id "test-chat"
                                                     :text "Доступные команды:
 /add https://t.me/<канал> - добавить канал
+/filter <номер> +нужное -запрещённое - настроить фильтр
 /tasks - показать каналы
 /delete <номер> - удалить канал"})}}])))))))))
 
@@ -151,9 +151,140 @@
               (fn [body]
                 (assert/equal
                  (get
-                  (JSON.parse (get (get (get (get body "effects") 3) "props") "body"))
+                  (JSON.parse (get-in body [:effects 3 :props :body]))
                   "text")
                  "Канал уже добавлен.")))))))
+
+(t/test "task owner sets a selection rule"
+        (fn []
+          (.then
+           (.fetch server "/"
+                   {:method "POST"
+                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                    :body (JSON.stringify {:message {:text "/filter 2 -реклама"
+                                                     :chat {:id "chat-1"}
+                                                     :from {:id "user-1"}}})})
+           (fn [response]
+             (.then
+              (.json response)
+              (fn [body]
+                (assert/deepStrictEqual
+                 (get body "effects")
+                 (JSON.parse
+                  (JSON.stringify
+                   [{:type "d1.prepare"
+                     :sql "UPDATE tasks SET selection_rule = ?1 WHERE id = (SELECT id FROM tasks WHERE telegram_user_id = ?2 ORDER BY id LIMIT 1 OFFSET ?3) AND telegram_user_id = ?2 RETURNING id"}
+                    {:type "d1.bind" :params ["-реклама" "user-1" 1]}
+                    {:type "fetch"
+                     :url "https://api.telegram.org/bottest-token/sendMessage"
+                     :props {:method "POST"
+                             :headers {"content-type" "application/json"}
+                             :body (JSON.stringify {:chat_id "chat-1"
+                                                    :text "Фильтр сохранён."})}}])))))))))
+
+(t/test "task owner removes a selection rule"
+        (fn []
+          (.then
+           (.fetch server "/"
+                   {:method "POST"
+                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                    :body (JSON.stringify {:message {:text "/filter 2 off"
+                                                     :chat {:id "chat-1"}
+                                                     :from {:id "user-1"}}})})
+           (fn [response]
+             (.then
+              (.json response)
+              (fn [body]
+                (assert/deepStrictEqual
+                 (get body "effects")
+                 (JSON.parse
+                  (JSON.stringify
+                   [{:type "d1.prepare"
+                     :sql "UPDATE tasks SET selection_rule = ?1 WHERE id = (SELECT id FROM tasks WHERE telegram_user_id = ?2 ORDER BY id LIMIT 1 OFFSET ?3) AND telegram_user_id = ?2 RETURNING id"}
+                    {:type "d1.bind" :params [nil "user-1" 1]}
+                    {:type "fetch"
+                     :url "https://api.telegram.org/bottest-token/sendMessage"
+                     :props {:method "POST"
+                             :headers {"content-type" "application/json"}
+                             :body (JSON.stringify {:chat_id "chat-1"
+                                                    :text "Фильтр удалён."})}}])))))))))
+
+(t/test "worker rejects an invalid selection rule"
+        (fn []
+          (.then
+           (.fetch server "/"
+                   {:method "POST"
+                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                    :body (JSON.stringify {:message {:text "/filter 2 clojure"
+                                                     :chat {:id "chat-1"}
+                                                     :from {:id "user-1"}}})})
+           (fn [response]
+             (.then
+              (.json response)
+              (fn [body]
+                (assert/deepStrictEqual
+                 (get body "effects")
+                 (JSON.parse
+                  (JSON.stringify
+                   [{:type "fetch"
+                     :url "https://api.telegram.org/bottest-token/sendMessage"
+                     :props {:method "POST"
+                             :headers {"content-type" "application/json"}
+                             :body (JSON.stringify
+                                    {:chat_id "chat-1"
+                                     :text "Использование: /filter <номер> +нужное -запрещённое или /filter <номер> off"})}}])))))))))
+
+(t/test "worker rejects an invalid task number for a selection rule"
+        (fn []
+          (.then
+           (.fetch server "/"
+                   {:method "POST"
+                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                    :body (JSON.stringify {:message {:text "/filter second +clojure"
+                                                     :chat {:id "chat-1"}
+                                                     :from {:id "user-1"}}})})
+           (fn [response]
+             (.then
+              (.json response)
+              (fn [body]
+                (assert/deepStrictEqual
+                 (get body "effects")
+                 (JSON.parse
+                  (JSON.stringify
+                   [{:type "fetch"
+                     :url "https://api.telegram.org/bottest-token/sendMessage"
+                     :props {:method "POST"
+                             :headers {"content-type" "application/json"}
+                             :body (JSON.stringify
+                                    {:chat_id "chat-1"
+                                     :text "Использование: /filter <номер> +нужное -запрещённое или /filter <номер> off"})}}])))))))))
+
+(t/test "worker reports a missing task for a selection rule"
+        (fn []
+          (.then
+           (.fetch server "/"
+                   {:method "POST"
+                    :headers {"X-Telegram-Bot-Api-Secret-Token" "test-secret"}
+                    :body (JSON.stringify {:message {:text "/filter 1 +clojure"
+                                                     :chat {:id "chat-1"}
+                                                     :from {:id "empty-user"}}})})
+           (fn [response]
+             (.then
+              (.json response)
+              (fn [body]
+                (assert/deepStrictEqual
+                 (get body "effects")
+                 (JSON.parse
+                  (JSON.stringify
+                   [{:type "d1.prepare"
+                     :sql "UPDATE tasks SET selection_rule = ?1 WHERE id = (SELECT id FROM tasks WHERE telegram_user_id = ?2 ORDER BY id LIMIT 1 OFFSET ?3) AND telegram_user_id = ?2 RETURNING id"}
+                    {:type "d1.bind" :params ["+clojure" "empty-user" 0]}
+                    {:type "fetch"
+                     :url "https://api.telegram.org/bottest-token/sendMessage"
+                     :props {:method "POST"
+                             :headers {"content-type" "application/json"}
+                             :body (JSON.stringify {:chat_id "chat-1"
+                                                    :text "Задача не найдена."})}}])))))))))
 
 (t/test "scheduled handler advances ordered posts and isolates failures"
         (fn []
@@ -171,7 +302,7 @@
                 effects
                 (JSON.parse
                  (JSON.stringify
-                  [{:type "d1.prepare" :sql "SELECT id, telegram_user_id, text, cursor FROM tasks ORDER BY id"}
+                  [{:type "d1.prepare" :sql "SELECT id, telegram_user_id, text, cursor, selection_rule FROM tasks ORDER BY id"}
                    {:type "fetch" :url "https://t.me/s/serbia?after=10" :props {}}
                    {:type "fetch"
                     :url "https://api.telegram.org/bottest-token/sendMessage"
@@ -196,7 +327,80 @@
                             :body (JSON.stringify {:chat_id "user-3" :text "https://t.me/cursorfail/31"})}}
                    {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
                    {:type "d1.bind" :params [31 3]}
-                   {:type "fetch" :url "https://t.me/s/quiet?after=40" :props {}}])))
+                   {:type "fetch" :url "https://t.me/s/quiet?after=40" :props {}}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/41"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [41 4]}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [42 4]}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/43"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [43 4]}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/44"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [44 4]}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [45 4]}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/46"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [46 4]}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/47"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [47 4]}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/48"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [48 4]}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-4" :text "https://t.me/quiet/49"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [49 4]}
+                   {:type "fetch" :url "https://t.me/s/prohibited?after=50" :props {}}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-5" :text "https://t.me/prohibited/51"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [51 5]}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [52 5]}
+                   {:type "fetch" :url "https://t.me/s/required?after=60" :props {}}
+                   {:type "fetch"
+                    :url "https://api.telegram.org/bottest-token/sendMessage"
+                    :props {:method "POST"
+                            :headers {"content-type" "application/json"}
+                            :body (JSON.stringify {:chat_id "user-6" :text "https://t.me/required/61"})}}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [61 6]}
+                   {:type "d1.prepare" :sql "UPDATE tasks SET cursor = ?1 WHERE id = ?2 AND cursor < ?1"}
+                   {:type "d1.bind" :params [62 6]}])))
                (assert/equal
                 (count (.filter logs (fn [{:level level}] (= "error" level))))
                 3))))))
@@ -219,14 +423,14 @@
                  (JSON.parse
                   (JSON.stringify
                    [{:type "d1.prepare"
-                     :sql "SELECT text FROM tasks WHERE telegram_user_id = ?1 ORDER BY id"}
+                     :sql "SELECT text, selection_rule FROM tasks WHERE telegram_user_id = ?1 ORDER BY id"}
                     {:type "d1.bind" :params ["user-1"]}
                     {:type "fetch"
                      :url "https://api.telegram.org/bottest-token/sendMessage"
                      :props {:method "POST"
                              :headers {"content-type" "application/json"}
                              :body (JSON.stringify {:chat_id "chat-1"
-                                                    :text "1. first\n2. second"})}}])))))))))
+                                                    :text "1. first (+C++ -реклама)\n2. second"})}}])))))))))
 
 (t/test "worker deletes the numbered task for the Telegram user"
         (fn []
@@ -420,7 +624,7 @@
                  (JSON.parse
                   (JSON.stringify
                    [{:type "d1.prepare"
-                     :sql "SELECT text FROM tasks WHERE telegram_user_id = ?1 ORDER BY id"}
+                     :sql "SELECT text, selection_rule FROM tasks WHERE telegram_user_id = ?1 ORDER BY id"}
                     {:type "d1.bind" :params ["empty-user"]}
                     {:type "fetch"
                      :url "https://api.telegram.org/bottest-token/sendMessage"
