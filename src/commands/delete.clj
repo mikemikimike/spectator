@@ -8,14 +8,13 @@
    (fn [] (Response. "OK"))))
 
 (defn handle [env message]
-  (if-let [text (if message (get message "text") nil)]
+  (if-let [text (:text message)]
     (if (= "/delete" text)
-      (usage env (get (get message "chat") "id"))
-      (if-let [sender (get message "from")
-               user-id (get sender "id")
+      (usage env (get-in message [:chat :id]))
+      (if-let [user-id (get-in message [:from :id])
                command (.startsWith text "/delete ")]
-        (let [chat-id (get (get message "chat") "id")
-              task-number (Number (.trim (.slice text 8)))]
+        (let [chat-id (get-in message [:chat :id])
+              task-number (-> text (.slice 8) .trim Number)]
           (if (and (.isInteger Number task-number)
                    (> task-number 0))
             (.then

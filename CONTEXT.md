@@ -13,8 +13,12 @@ A checked-in local copy of the official Telegram Bot API reference used by the p
 _Avoid_: SDK documentation, framework guide
 
 **Task**:
-A public Telegram channel link stored by the bot and owned by one Telegram user ID. It watches for Channel Posts published after it was added; only its owner can list or delete it.
+A public Telegram channel link and optional Selection Rule stored by the bot and owned by one Telegram user ID. It watches for Channel Posts published after it was added; only its owner can list or delete it.
 _Avoid_: text task, team task, shared task, Channel Task
+
+**Selection Rule**:
+A Task-specific set of required and prohibited keywords matched case-insensitively against a Channel Post's text or caption. Keywords may contain punctuation; surrounding punctuation in the post is ignored. A post matches when it contains any required keyword (or none are configured) and no prohibited keyword. Prohibited keywords take precedence. Posts without analysable text match; Tasks without a Selection Rule match every post.
+_Avoid_: global filter, channel filter
 
 **Task owner**:
 A Telegram user ID that owns at least one stored Task.

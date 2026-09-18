@@ -2,8 +2,12 @@
   (:require [db :as db])
   (:require [telegram :as telegram]))
 
-(defn- latest-id [ids]
-  (reduce (fn [latest id] (if (> id latest) id latest)) 0 ids))
+(defn- latest-id [posts]
+  (reduce (fn [latest post]
+            (let [id (get post "id")]
+              (if (> id latest) id latest)))
+          0
+          posts))
 
 (defn- prompt [env chat-id]
   (.then
@@ -11,21 +15,20 @@
    (fn [] (Response. "OK"))))
 
 (defn handle [env message]
-  (if-let [text (if message (get message "text") nil)
+  (if-let [text (:text message)
            command (or (= "/add" text) (.startsWith text "/add "))]
     (let [{:id chat-id :type chat-type} (get message "chat")]
       (if (or (= "/add" text)
-              (= "" (.trim (.slice text 4))))
+              (= "" (-> text (.slice 4) .trim)))
         (if (= "private" chat-type)
           (prompt env chat-id)
           (Response. "OK"))
-        (if-let [sender (get message "from")
-                 user-id (get sender "id")]
+        (if-let [user-id (get-in message [:from :id])]
           (if (= "private" chat-type)
             (if-let [task-channel (telegram/channel (.slice text 4))]
               (.then
                (.catch
-                (telegram/fetch-post-ids (telegram/preview-url task-channel) true)
+                (telegram/fetch-posts (telegram/preview-url task-channel) true)
                 (fn [error]
                   (globalThis.console.error
                    (JSON.stringify {:event "task_add_error"
